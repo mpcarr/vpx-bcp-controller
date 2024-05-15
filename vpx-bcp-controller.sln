@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.33424.131
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "vpx-bcp-controller", "vpx-bcp-controller\vpx-bcp-controller.csproj", "{E98504A0-DC38-4C72-B883-B484AF93E26B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestHarness", "TestHarness\TestHarness.csproj", "{5C4A33BB-3176-4D93-8113-90F1774C141C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E98504A0-DC38-4C72-B883-B484AF93E26B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E98504A0-DC38-4C72-B883-B484AF93E26B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E98504A0-DC38-4C72-B883-B484AF93E26B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E98504A0-DC38-4C72-B883-B484AF93E26B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5C4A33BB-3176-4D93-8113-90F1774C141C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5C4A33BB-3176-4D93-8113-90F1774C141C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5C4A33BB-3176-4D93-8113-90F1774C141C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5C4A33BB-3176-4D93-8113-90F1774C141C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {9F0931C3-75AB-4DC1-B21C-F5496D04C00D}
+	EndGlobalSection
+EndGlobal
