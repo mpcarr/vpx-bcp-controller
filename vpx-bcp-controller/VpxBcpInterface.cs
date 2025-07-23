@@ -1,4 +1,6 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -6,6 +8,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -30,35 +33,65 @@ namespace vpx_bcp_controller
         public async void Connect(int port, string pathToMediaController)
         {
             this.cancellationTokenSource = new CancellationTokenSource();
-
-            if (File.Exists(pathToMediaController))
+            BcpLogger.Trace("Attempting to load program: " + pathToMediaController);
+            if (pathToMediaController != null && pathToMediaController!=String.Empty)
             {
-                Process process = new Process();
-                process.StartInfo.FileName = pathToMediaController;
-                process.Start();
+                string fullPath = Path.GetFullPath(pathToMediaController);
+                BcpLogger.Trace("Starting Monitor with full path: " + fullPath);
+
+                if (File.Exists(fullPath))
+                {
+                    Process process = new Process();
+                    process.StartInfo.FileName = fullPath;
+                    process.Start();
+                }
+                else
+                {
+                    BcpLogger.Trace("Executable not found: " + fullPath);
+                    BcpLogger.Trace("Trying Shortcut: " + fullPath + ".lnk");
+                    fullPath = fullPath + ".lnk";
+                    if (File.Exists(fullPath))
+                    {
+                        Process process = new Process();
+                        process.StartInfo.FileName = fullPath;
+                        process.Start();
+                    }
+                    else
+                    {
+                        BcpLogger.Trace("Executable not found: " + fullPath);
+                    }
+                }
+            }
+
+            BcpLogger.Trace("Connecting to BCPServer on port: " + port);
+            bcpClient = new BcpServer(port);
+
+            if (bcpClient.ClientConnected)
+            {
+                // Start an asynchronous task to send messages to the server
+                sendTask = Task.Run(async () =>
+                {
+                    while (!this.cancellationTokenSource.Token.IsCancellationRequested)
+                    {
+                        if (messageQueue.TryDequeue(out BcpMessage message))
+                        {
+                            BcpServer.Instance.Send(message);
+                        }
+                    }
+                }, this.cancellationTokenSource.Token);
+
+
+                await sendTask;
             }
             else
             {
-               BcpLogger.Trace("Executable not found: " + pathToMediaController);
+                bcpClient.Close();
             }
+        }
 
-            bcpClient = new BcpServer(port);
-
-            // Start an asynchronous task to send messages to the server
-            sendTask = Task.Run(async () =>
-            {
-                while (!this.cancellationTokenSource.Token.IsCancellationRequested)
-                {
-                    if (messageQueue.TryDequeue(out BcpMessage message))
-                    {
-                        BcpServer.Instance.Send(message);
-                    }
-                }
-            }, this.cancellationTokenSource.Token);
-
-            
-            await sendTask;
-
+        public void EnableLogging()
+        {
+            BcpLogger.Instance.Enabled = true;
         }
 
         public void Send(string commandMessage)
@@ -102,7 +135,7 @@ namespace vpx_bcp_controller
     {
         public string Command { get; set; } = string.Empty;
 
-        private Dictionary<string,string> _parameters { get; set; }
+        private Dictionary<string, string> _parameters { get; set; }
 
         public VpxBcpMessage(string command, Dictionary<string, string> parameters)
         {
@@ -115,9 +148,35 @@ namespace vpx_bcp_controller
 
         public string GetValue(string key)
         {
-            if(_parameters != null && _parameters.ContainsKey(key))
+            if (_parameters != null && _parameters.ContainsKey(key))
                 return _parameters[key];
             return string.Empty;
+        }
+
+        [return: MarshalAs(UnmanagedType.Struct, SafeArraySubType = VarEnum.VT_ARRAY)]
+        public object GetArrayValue(string key)
+        {
+            BcpLogger.Trace("Getting: " + key);
+            if (_parameters != null && _parameters.ContainsKey("json") && !string.IsNullOrEmpty(_parameters["json"]))
+            {
+                BcpLogger.Trace("Getting1: " + key);
+                try
+                {
+                    JObject json = JObject.Parse(_parameters["json"]);
+                    JToken valueToken = json.SelectToken(key);
+                    BcpLogger.Trace("Getting1: " + valueToken.ToString());
+                    if (valueToken != null)
+                    {
+                        return valueToken.ToArray();
+                    }
+                }
+                catch (JsonReaderException)
+                {
+                    BcpLogger.Trace("Invalid JSON format.");
+                }
+            }
+            return null;
+
         }
     }
 }

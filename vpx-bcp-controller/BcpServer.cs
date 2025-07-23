@@ -50,7 +50,9 @@ namespace vpx_bcp_controller
             BcpLogger.Trace("BcpServer: " + CONTROLLER_NAME + " " + CONTROLLER_VERSION);
             BcpLogger.Trace("BcpServer: BCP Specification Version " + BCP_SPECIFICATION_VERSION);
 
-            while (!_connectedToServer)
+            int retryCount = 0;
+
+            while (!_connectedToServer && retryCount < 3)
             {
                 try
                 {
@@ -61,14 +63,18 @@ namespace vpx_bcp_controller
                 {
                     BcpLogger.Trace("BcpServer: Failed to connect, retrying...");
                     Thread.Sleep(5000); // Wait for 5 seconds before retrying
+                    retryCount++;
                 }
             }
 
-            Send(new BcpMessage("hello?version=21&controller_name=VPX&controller_version=0.1.0"));
 
+            if (_connectedToServer)
+            {
+                Send(new BcpMessage("hello?version=21&controller_name=VPX&controller_version=0.1.0"));
 
-            Thread clientThread = new Thread(new ParameterizedThreadStart(HandleClientCommunications));
-            clientThread.Start(_client);
+                Thread clientThread = new Thread(new ParameterizedThreadStart(HandleClientCommunications));
+                clientThread.Start(_client);
+            }
 
         }
 

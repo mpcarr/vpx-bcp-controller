@@ -17,7 +17,7 @@ namespace vpx_bcp_controller
 
         public string LogFile = "bcplog.txt";
 
-        public bool Enabled = true;
+        public bool Enabled = false;
 
         public bool EchoToConsole = true;
 
@@ -45,7 +45,10 @@ namespace vpx_bcp_controller
 
             // Open the log file to append the new log to it.
             if (BcpLogger.Instance.Enabled)
+            {
                 OutputStream = new StreamWriter(LogFile, false);
+                Write("Init BCP Log");
+            }
         }
 
         ~BcpLogger()
@@ -84,9 +87,6 @@ namespace vpx_bcp_controller
             if (BcpLogger.Instance != null)
                 if (BcpLogger.Instance.Enabled)
                     BcpLogger.Instance.Write(Message);
-                else
-                    // Fall back if the debugging system hasn't been initialized yet.
-                    Debug.WriteLine(Message);
         }
 
 

@@ -16,6 +16,8 @@ namespace vpx_bcp_controller
         void Disconnect();
         void Send(string commandMessage);
 
+        void EnableLogging();
+
         [return: MarshalAs(UnmanagedType.Struct, SafeArraySubType = VarEnum.VT_ARRAY)]
         object GetMessages();
 
@@ -30,6 +32,9 @@ namespace vpx_bcp_controller
         string Command { get; set; }
 
         string GetValue(string key);
+
+        object GetArrayValue(string key);
+
 
         #endregion
     }
