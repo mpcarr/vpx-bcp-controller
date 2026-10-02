@@ -11,16 +11,68 @@
 #include <unistd.h>
 #include <cerrno>
 #include <cstring>
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#include <limits.h>
+#endif
 #endif
 
 namespace bcp {
+std::filesystem::path ResolveExecutable(const std::string& executable) {
+    if (executable.empty()) throw std::invalid_argument("Executable name is empty");
+    const auto base = std::filesystem::absolute(std::filesystem::u8path(executable));
+    std::vector<std::filesystem::path> candidates;
+    auto append = [&](const char* suffix) { auto path = base; path += suffix; candidates.push_back(path); };
+    // A basename selects a native export. Explicit filenames retain their meaning.
+#ifdef _WIN32
+    if (!base.has_extension()) append(".exe");
+    candidates.push_back(base);
+    append(".lnk");
+    if (!base.has_extension()) append(".exe.lnk");
+#elif defined(__APPLE__)
+    if (!base.has_extension()) append(".app");
+    candidates.push_back(base);
+#else
+    candidates.push_back(base);
+    if (!base.has_extension()) {
+#if defined(__aarch64__)
+        append(".arm64"); append(".aarch64");
+#elif defined(__x86_64__)
+        append(".x86_64");
+#endif
+    }
+#endif
+    std::string tried;
+    for (auto path : candidates) {
+        if (!tried.empty()) tried += ", ";
+        const auto utf8 = path.u8string(); tried.append(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+#ifdef __APPLE__
+        if (path.extension() == ".app" && std::filesystem::is_directory(path)) {
+            const auto name = path.string();
+            CFURLRef url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
+                reinterpret_cast<const UInt8*>(name.data()), name.size(), true);
+            CFBundleRef bundle = url ? CFBundleCreate(kCFAllocatorDefault, url) : nullptr;
+            CFURLRef target = bundle ? CFBundleCopyExecutableURL(bundle) : nullptr;
+            UInt8 filename[PATH_MAX];
+            const bool found = target && CFURLGetFileSystemRepresentation(target, true, filename, sizeof(filename));
+            if (target) CFRelease(target);
+            if (bundle) CFRelease(bundle);
+            if (url) CFRelease(url);
+            if (!found) throw std::runtime_error("App bundle has no executable; check Contents/Info.plist: " + name);
+            path = std::filesystem::path(reinterpret_cast<const char*>(filename));
+        }
+#endif
+        if (!std::filesystem::is_regular_file(path)) continue;
+#ifndef _WIN32
+        if (access(path.c_str(), X_OK) != 0) throw std::runtime_error("Media controller is not executable (check chmod +x): " + path.string());
+#endif
+        return path;
+    }
+    throw std::runtime_error("Media controller executable not found. Tried: " + tried);
+}
 void Launch(const std::string& executable, const std::string& project) {
     if (executable.empty()) return;
-    auto path = std::filesystem::absolute(std::filesystem::u8path(executable));
-#ifdef _WIN32
-    if (!std::filesystem::exists(path) && std::filesystem::exists(path.wstring() + L".lnk")) path += L".lnk";
-#endif
-    if (!std::filesystem::exists(path)) throw std::runtime_error("Media controller executable does not exist: " + executable);
+    const auto path = ResolveExecutable(executable);
 #ifdef _WIN32
     // Windows command-line quoting, including trailing backslashes before a quote.
     auto quote = [](const std::wstring& value) {

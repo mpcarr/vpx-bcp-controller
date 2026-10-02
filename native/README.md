@@ -95,11 +95,40 @@ when enabled and are available through `LastError`.
 
 Executables are launched without a command shell. Paths are resolved relative to
 the host working directory; pass absolute paths for predictable behavior.
-Windows supports `.lnk` fallback. Linux/macOS require a native executable (for a
-macOS app bundle use its `Contents/MacOS/...` executable); Windows `.exe`/`.lnk`
-paths in a table must be adapted for other systems. Launched processes are not
+You can pass a platform-neutral basename such as `DarkChaos_gmc`:
+
+| Platform | Lookup order for a basename |
+| --- | --- |
+| Windows | `DarkChaos_gmc.exe`, exact name, `.lnk`, `.exe.lnk` |
+| Linux | Exact name, then `.x86_64` on x64 or `.arm64` / `.aarch64` on ARM64 |
+| macOS | `DarkChaos_gmc.app`, then exact name |
+
+Explicit filenames are preserved (Windows still permits `.lnk` fallback).
+macOS app bundles resolve their executable through bundle metadata, so the
+internal executable may have a different name; both XML and binary plists are
+handled by CoreFoundation. Linux/macOS binaries need executable permission.
+Each system still requires its own Godot export; this does not run Windows
+binaries on other platforms. Launched processes are not
 killed by Disconnect. The plugin stops networking at game end and unload; VPX
 must release script objects before unloading their providing library.
+
+For the native plugin, use `bcpExeName = CGameName & "_gmc"`. Remove the GLF
+startup wrapper's `FileSystemObject.FileExists(bcpExeName)` check: the basename
+itself may not exist, and a macOS app is a directory. Let the plugin resolve and
+validate the export instead:
+
+```vb
+Public Sub Glf_ConnectToBCPMediaController(args)
+    If glf_production_mode Then
+        Set bcpController = (New GlfVpxBcpController)(bcpPort, bcpExeName)
+    Else
+        Set bcpController = (New GlfVpxBcpController)(bcpPort, "")
+    End If
+End Sub
+```
+
+This basename lookup is a native-plugin feature. When using the older C#
+controller, continue supplying its explicit Windows executable filename.
 
 ## Verification
 

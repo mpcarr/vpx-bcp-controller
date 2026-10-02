@@ -14,7 +14,11 @@ int main(int argc, char** argv) {
         } else if (argc == 2 && std::string(argv[1]) == "--launch-test") {
             auto marker = std::filesystem::current_path() / "launch test & literal.txt";
             std::filesystem::remove(marker);
-            bcp::Launch(std::filesystem::absolute(argv[0]).string(), marker.string());
+            auto launchPath = std::filesystem::absolute(argv[0]);
+#ifdef _WIN32
+            launchPath.replace_extension(); // Exercise basename lookup through the real launcher.
+#endif
+            bcp::Launch(launchPath.string(), marker.string());
             const auto deadline = std::chrono::steady_clock::now() + 5s;
             while (std::chrono::steady_clock::now() < deadline && !std::filesystem::exists(marker)) std::this_thread::sleep_for(10ms);
             std::ifstream stream(marker); std::string result; stream >> result; stream.close();
@@ -23,6 +27,52 @@ int main(int argc, char** argv) {
             bool failed = false;
             try { bcp::Launch("nonexistent-bcp-program-for-test"); } catch (...) { failed = true; }
             Check(failed, "launch failure reporting");
+        } else if (argc == 2 && std::string(argv[1]) == "--resolve-test") {
+            const auto root = std::filesystem::current_path() / "resolver-test-fixtures";
+            Check(std::filesystem::create_directory(root), "fixture directory must not already exist");
+            struct Cleanup { std::filesystem::path root; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(root, ec); } } cleanup{root};
+            auto copy = [&](const std::filesystem::path& target) {
+                std::filesystem::copy_file(std::filesystem::absolute(argv[0]), target);
+                std::filesystem::permissions(target, std::filesystem::perms::owner_exec, std::filesystem::perm_options::add);
+            };
+            auto base = root / "Dark Chaos_gmc";
+            std::filesystem::path expected;
+#ifdef _WIN32
+            expected = base; expected += ".exe";
+            copy(expected); copy(base);
+            Check(bcp::ResolveExecutable(base.string()) == expected, "prefer Windows export over extensionless file");
+            auto link = root / "Shortcut.lnk"; std::ofstream(link) << "fixture";
+            Check(bcp::ResolveExecutable((root / "Shortcut").string()) == link, "shortcut fallback");
+#elif defined(__APPLE__)
+            auto bundle = base; bundle += ".app";
+            std::filesystem::create_directories(bundle / "Contents/MacOS");
+            std::ofstream(bundle / "Contents/Info.plist") <<
+                "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>"
+                "<key>CFBundleExecutable</key><string>Different Binary Name</string>"
+                "<key>CFBundlePackageType</key><string>APPL</string></dict></plist>";
+            expected = bundle / "Contents/MacOS/Different Binary Name";
+            copy(expected);
+            Check(bcp::ResolveExecutable(base.string()) == expected, "resolve macOS bundle metadata");
+            Check(bcp::ResolveExecutable(bundle.string()) == expected, "explicit macOS bundle");
+#else
+            expected = base; copy(expected);
+            Check(bcp::ResolveExecutable(base.string()) == expected, "Linux extensionless binary");
+#if defined(__aarch64__) || defined(__x86_64__)
+            auto suffixed = root / "Architecture_gmc";
+            auto binary = suffixed;
+#if defined(__aarch64__)
+            binary += ".arm64";
+#else
+            binary += ".x86_64";
+#endif
+            copy(binary);
+            Check(bcp::ResolveExecutable(suffixed.string()) == binary, "Linux architecture suffix");
+#endif
+#endif
+            Check(bcp::ResolveExecutable(expected.string()) == expected, "explicit executable path");
+            bool failed = false;
+            try { bcp::ResolveExecutable((root / "Missing").string()); } catch (const std::exception& e) { failed = std::string(e.what()).find("Tried:") != std::string::npos; }
+            Check(failed, "missing export diagnostics");
         } else if (argc == 3) {
             bcp::Client a, b;
             a.Connect(std::stoi(argv[1])); b.Connect(std::stoi(argv[2]));
