@@ -1,40 +1,27 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace vpx_bcp_controller
 {
-
-    /// <summary>
-    /// This singleton class provides a timestamped log file that will only be available in debug builds.
-    /// </summary>
     public class BcpLogger
     {
-
         public string LogFile = "bcplog.txt";
-
         public bool Enabled = false;
-
         public bool EchoToConsole = true;
-
         public bool AddTimeStamp = true;
 
         private StreamWriter OutputStream;
+        private readonly object _sync = new object();
+        private bool _closed = false;
 
         static BcpLogger Singleton = null;
 
-        public static BcpLogger Instance
-        {
-            get { return Singleton; }
-        }
+        public static BcpLogger Instance => Singleton;
 
         public BcpLogger()
         {
-
             if (Singleton != null)
             {
                 Debug.WriteLine("Multiple BcpLogger Singletons exist!");
@@ -43,21 +30,61 @@ namespace vpx_bcp_controller
 
             Singleton = this;
 
-            // Open the log file to append the new log to it.
-            if (BcpLogger.Instance.Enabled)
+            // NOTE: this used to check BcpLogger.Instance.Enabled which is awkward in ctor.
+            // If Enabled is false (default), do nothing until EnableLogging() is called.
+            if (Enabled)
             {
-                OutputStream = new StreamWriter(LogFile, false);
+                OpenStream();
                 Write("Init BCP Log");
             }
         }
 
-        ~BcpLogger()
+        // Finalizers + multithreading + IO = pain. Prefer explicit close.
+        // If you really want to keep it, at least lock and swallow exceptions.
+        //~BcpLogger()
+        //{
+        //    Close();
+        //}
+
+        public void EnableLogging()
         {
-            if (OutputStream != null)
+            lock (_sync)
             {
-                OutputStream.Close();
-                OutputStream = null;
+                Enabled = true;
+                _closed = false;
+
+                CloseStream_NoThrow();
+                OpenStream();
             }
+
+            Write("Init BCP Log");
+        }
+
+        public void Close()
+        {
+            lock (_sync)
+            {
+                _closed = true;
+                Enabled = false;
+                CloseStream_NoThrow();
+            }
+        }
+
+        private void OpenStream()
+        {
+            // lock must already be held
+            OutputStream = new StreamWriter(new FileStream(LogFile, FileMode.Create, FileAccess.Write, FileShare.Read))
+            {
+                AutoFlush = true
+            };
+        }
+
+        private void CloseStream_NoThrow()
+        {
+            // lock must already be held
+            try { OutputStream?.Flush(); } catch { }
+            try { OutputStream?.Dispose(); } catch { }
+            OutputStream = null;
         }
 
         private void Write(string message)
@@ -68,11 +95,28 @@ namespace vpx_bcp_controller
                 message = string.Format("[{0:H:mm:ss}] {1}", now, message);
             }
 
-            if (OutputStream != null)
+            lock (_sync)
             {
+                if (_closed || !Enabled || OutputStream == null)
+                {
+                    // Still optionally echo to Debug even if file is closed
+                    if (EchoToConsole) Debug.WriteLine(message);
+                    return;
+                }
 
-                OutputStream.WriteLine(message);
-                OutputStream.Flush();
+                try
+                {
+                    OutputStream.WriteLine(message);
+                    // AutoFlush=true, no need to Flush() every line
+                }
+                catch (ObjectDisposedException)
+                {
+                    // shutting down: ignore
+                }
+                catch (IOException)
+                {
+                    // file IO problem: ignore or consider disabling
+                }
             }
 
             if (EchoToConsole)
@@ -84,12 +128,11 @@ namespace vpx_bcp_controller
         [Conditional("DEBUG")]
         public static void Trace(string Message)
         {
-            if (BcpLogger.Instance != null)
-                if (BcpLogger.Instance.Enabled)
-                    BcpLogger.Instance.Write(Message);
+            var inst = BcpLogger.Instance;
+            if (inst == null) return;
+            if (!inst.Enabled) return;
+
+            inst.Write(Message);
         }
-
-
     }
-
 }

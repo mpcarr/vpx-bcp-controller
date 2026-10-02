@@ -30,6 +30,38 @@ namespace vpx_bcp_controller
             BcpLogger logger = new BcpLogger();
         }
 
+        public async void Connect(int port, string pathToGodot, string pathToProject)
+        {
+            try
+            {
+                BcpLogger.Trace("Attempting to start godot program: " + pathToGodot);
+                BcpLogger.Trace("Attempting to start godot project: " + pathToProject);
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = pathToGodot,
+                    Arguments = $"--path \"{pathToProject}\"",
+                    UseShellExecute = false
+                };
+
+                Process.Start(startInfo);
+            }
+            catch (Exception ex)
+            {
+                BcpLogger.Trace(ex.Message);
+            }
+            Connect(port, "");
+        }
+
+        public void ConnectToDebug(int port)
+        {
+            Connect(port, "");
+        }
+
+        public void ConnectToBuild(int port, string pathToMediaController)
+        {
+            Connect(port, pathToMediaController);
+        }
+
         public async void Connect(int port, string pathToMediaController)
         {
             this.cancellationTokenSource = new CancellationTokenSource();
@@ -91,7 +123,7 @@ namespace vpx_bcp_controller
 
         public void EnableLogging()
         {
-            BcpLogger.Instance.Enabled = true;
+            BcpLogger.Instance.EnableLogging();
         }
 
         public void Send(string commandMessage)
@@ -124,7 +156,7 @@ namespace vpx_bcp_controller
             if (bcpClient != null)
             {
                 this.cancellationTokenSource.Cancel();
-                BcpServer.Instance.Close();
+                BcpServer.Instance?.Close();
             }
         }
 

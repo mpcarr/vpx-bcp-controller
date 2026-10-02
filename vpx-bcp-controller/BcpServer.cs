@@ -19,6 +19,7 @@ namespace vpx_bcp_controller
         public const string BCP_SPECIFICATION_VERSION = "1.1";
 
         private TcpClient _client;
+        private Thread _clientThread;
 
         private volatile int _port;
 
@@ -72,8 +73,9 @@ namespace vpx_bcp_controller
             {
                 Send(new BcpMessage("hello?version=21&controller_name=VPX&controller_version=0.1.0"));
 
-                Thread clientThread = new Thread(new ParameterizedThreadStart(HandleClientCommunications));
-                clientThread.Start(_client);
+                _clientThread = new Thread(HandleClientCommunications);
+                _clientThread.IsBackground = true;
+                _clientThread.Start(_client);
             }
 
         }
@@ -87,65 +89,91 @@ namespace vpx_bcp_controller
         {
             BcpLogger.Trace("BcpServer: HandleClientCommunications thread start");
             _readerRunning = true;
+
             TcpClient tcpClient = (TcpClient)client;
-            NetworkStream clientStream = tcpClient.GetStream();
+            NetworkStream clientStream = null;
 
-            StringBuilder messageBuffer = new StringBuilder(1024);
-            byte[] buffer = new byte[1024];
-            int bytesRead;
+            // Accumulate one line (one message) at a time
+            StringBuilder lineBuffer = new StringBuilder(1024);
 
-            while (_readerRunning)
+            // Read bytes, decode into chars incrementally (handles UTF-8 split chars across packets)
+            byte[] byteBuffer = new byte[1024];
+            char[] charBuffer = new char[1024]; // 1024 chars is fine; decoder will output <= input size for UTF-8
+            Decoder decoder = Encoding.UTF8.GetDecoder();
+
+            try
             {
-                bytesRead = 0;
+                clientStream = tcpClient.GetStream();
 
-                try
+                while (_readerRunning)
                 {
-                    // Blocks until a client sends a message
-                    bytesRead = clientStream.Read(buffer, 0, 1024);
+                    int bytesRead;
 
-                    if (bytesRead > 0)
+                    try
                     {
-                        messageBuffer.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
+                        // Blocks until bytes arrive or the connection is closed
+                        bytesRead = clientStream.Read(byteBuffer, 0, byteBuffer.Length);
+                    }
+                    catch (IOException) when (!_readerRunning || !_connectedToServer)
+                    {
+                        // Expected during shutdown: socket closed while a blocking Read() was in progress
+                        break;
+                    }
+                    catch (ObjectDisposedException) when (!_readerRunning || !_connectedToServer)
+                    {
+                        // Expected during shutdown
+                        break;
+                    }
 
-                        // Determine if message is complete (check for message termination character)
-                        // If not complete, save the buffer contents and continue to read packets, appending
-                        // to saved buffer.  Once completed, convert to a BCP message.
-                        int terminationCharacterPos = 0;
-                        while ((terminationCharacterPos = messageBuffer.ToString().IndexOf("\n")) > -1)
+                    if (bytesRead <= 0)
+                    {
+                        // Client disconnected cleanly
+                        _readerRunning = false;
+                        break;
+                    }
+
+                    int charsDecoded = decoder.GetChars(byteBuffer, 0, bytesRead, charBuffer, 0, flush: false);
+
+                    for (int i = 0; i < charsDecoded; i++)
+                    {
+                        char c = charBuffer[i];
+                        lineBuffer.Append(c);
+
+                        if (c == '\n')
                         {
-                            BcpLogger.Trace("BcpServer: >>>>>>>>>>>>>> Received raw message: " + messageBuffer.ToString(0, terminationCharacterPos + 1));
+                            // Full message received (includes '\n')
+                            string rawMessage = lineBuffer.ToString();
+                            lineBuffer.Clear();
 
-                            // Convert received data to a BcpMessage
-                            BcpMessage message = BcpMessage.CreateFromRawMessage(messageBuffer.ToString(0, terminationCharacterPos + 1));
+                            BcpLogger.Trace("BcpServer: >>>>>>>>>>>>>> Received raw message: " + rawMessage);
+
+                            BcpMessage message = BcpMessage.CreateFromRawMessage(rawMessage);
                             if (message != null)
                             {
-                                BcpLogger.Trace("BcpServer: >>>>>>>>>>>>>> Received \"" + message.Command + "\" message: " + message.ToString());
-
-                                // Add BCP message to the queue to be processed
+                                BcpLogger.Trace(
+                                    $"BcpServer: >>>>>>>>>>>>>> Received \"{message.Command}\" message: {message}");
                                 BcpMessageManager.Instance.AddMessageToQueue(message);
                             }
-
-                            // Remove the converted message from the buffer
-                            messageBuffer.Remove(0, terminationCharacterPos + 1);
                         }
                     }
-                    else
-                    {
-                        // The client has disconnected from the server
-                        _readerRunning = false;
-                    }
-                }
-                catch (Exception e)
-                {
-                    // A socket error has occurred
-                    BcpLogger.Trace("BcpServer: Client reader thread exception: " + e.ToString());
-                    _readerRunning = false;
                 }
             }
+            catch (Exception e)
+            {
+                // If we're not intentionally shutting down, log it
+                if (_readerRunning && _connectedToServer)
+                {
+                    BcpLogger.Trace("BcpServer: Client reader thread exception: " + e);
+                }
+            }
+            finally
+            {
+                BcpLogger.Trace("BcpServer: HandleClientCommunications thread finish");
+                BcpLogger.Trace("BcpServer: Closing TCP/Socket client");
 
-            BcpLogger.Trace("BcpServer: HandleClientCommunications thread finish");
-            BcpLogger.Trace("BcpServer: Closing TCP/Socket client");
-            tcpClient.Close();
+                try { clientStream?.Close(); } catch { }
+                try { tcpClient.Close(); } catch { }
+            }
         }
 
         public void Close()
@@ -155,17 +183,24 @@ namespace vpx_bcp_controller
             try
             {
                 _connectedToServer = false;
+                _readerRunning = false;
 
                 if (ClientConnected)
                 {
                     // Send goodbye message to connected client
                     Send(new BcpMessage("goodbye"));
-                    _client.Close();
+
+                    // Unblock Read() more cleanly
+                    try { _client?.Client?.Shutdown(SocketShutdown.Both); } catch { }
+
+                    _client?.Close();
                 }
+
+                // Wait for the reader thread to exit
+                try { _clientThread?.Join(1000); } catch { }
+                _clientThread = null;
             }
-            catch
-            {
-            }
+            catch { }
 
             BcpLogger.Trace("BcpServer: Close finished");
         }

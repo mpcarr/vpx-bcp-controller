@@ -12,7 +12,10 @@ namespace vpx_bcp_controller
     {
         #region Properties
 
-        void Connect(int port, string pathToMediaController);
+        void Connect(int port, string pathToGodot, string pathToGodotProject);
+        void ConnectToDebug(int port);
+
+        void ConnectToBuild(int port, string pathToMediaController);
         void Disconnect();
         void Send(string commandMessage);
 
