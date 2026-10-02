@@ -1,0 +1,56 @@
+name: Native BCP plugin
+on:
+  push:
+    paths: ['native/**', '.github/workflows/native-plugin.yml']
+  pull_request:
+    paths: ['native/**', '.github/workflows/native-plugin.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            package: windows-x64
+            options: '-A x64'
+          - os: ubuntu-latest
+            package: linux-x64
+            options: ''
+          - os: ubuntu-24.04-arm
+            package: linux-aarch64
+            options: ''
+          - os: macos-latest
+            package: macos-universal
+            options: '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: vpinball/vpinball
+          ref: eb9ae26c30e2475e865e41ba89bc6f271b173bef
+          path: vpx-sdk
+          sparse-checkout: plugins/plugins
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Configure
+        shell: bash
+        env:
+          BUILD_OPTIONS: ${{ matrix.options }}
+        run: |
+          read -r -a options <<< "$BUILD_OPTIONS"
+          cmake -S native -B native/build -DVPX_SOURCE_DIR="$GITHUB_WORKSPACE/vpx-sdk" -DCMAKE_BUILD_TYPE=Release "${options[@]}"
+      - name: Build
+        run: cmake --build native/build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir native/build -C Release --output-on-failure
+      - name: Stage
+        run: cmake --install native/build --config Release --prefix native/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bcp-${{ matrix.package }}
+          path: native/dist/
