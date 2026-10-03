@@ -18,9 +18,10 @@
 #endif
 
 namespace bcp {
-std::filesystem::path ResolveExecutable(const std::string& executable) {
+std::filesystem::path ResolveExecutable(const std::string& executable, const std::filesystem::path& baseDirectory) {
     if (executable.empty()) throw std::invalid_argument("Executable name is empty");
-    const auto base = std::filesystem::absolute(std::filesystem::u8path(executable));
+    const auto requested = std::filesystem::u8path(executable);
+    const auto base = std::filesystem::absolute(requested.is_absolute() ? requested : baseDirectory / requested);
     std::vector<std::filesystem::path> candidates;
     auto append = [&](const char* suffix) { auto path = base; path += suffix; candidates.push_back(path); };
     // A basename selects a native export. Explicit filenames retain their meaning.
@@ -70,9 +71,9 @@ std::filesystem::path ResolveExecutable(const std::string& executable) {
     }
     throw std::runtime_error("Media controller executable not found. Tried: " + tried);
 }
-void Launch(const std::string& executable, const std::string& project) {
+void Launch(const std::string& executable, const std::string& project, const std::filesystem::path& baseDirectory) {
     if (executable.empty()) return;
-    const auto path = ResolveExecutable(executable);
+    const auto path = ResolveExecutable(executable, baseDirectory);
 #ifdef _WIN32
     // Windows command-line quoting, including trailing backslashes before a quote.
     auto quote = [](const std::wstring& value) {

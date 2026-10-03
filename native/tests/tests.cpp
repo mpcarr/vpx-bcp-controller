@@ -70,6 +70,8 @@ int main(int argc, char** argv) {
 #endif
 #endif
             Check(bcp::ResolveExecutable(expected.string()) == expected, "explicit executable path");
+            Check(bcp::ResolveExecutable("Dark Chaos_gmc", root) == expected, "table-relative basename independent of working directory");
+            Check(bcp::ResolveExecutable(expected.string(), root / "elsewhere") == expected, "absolute path ignores table directory");
             bool failed = false;
             try { bcp::ResolveExecutable((root / "Missing").string()); } catch (const std::exception& e) { failed = std::string(e.what()).find("Tried:") != std::string::npos; }
             Check(failed, "missing export diagnostics");

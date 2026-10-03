@@ -13,6 +13,7 @@ namespace {
 const MsgPluginAPI* host = nullptr;
 ScriptablePluginAPI* script = nullptr;
 LoggingPluginAPI* logging = nullptr;
+VPXPluginAPI* vpx = nullptr;
 uint32_t endpoint = 0;
 unsigned int endMessage = 0;
 struct Controller;
@@ -40,7 +41,14 @@ struct Controller : RefCounted {
     void Connect(int port, const std::string& exe = "", const std::string& project = "") {
         if (port < 1 || port > 65535) throw std::invalid_argument("Invalid BCP port");
         client.Disconnect(); reportedError.clear();
-        bcp::Launch(exe, project);
+        std::filesystem::path tableDirectory;
+        if (!exe.empty() && std::filesystem::u8path(exe).is_relative() && vpx && vpx->GetTableInfo) {
+            VPXTableInfo info{};
+            vpx->GetTableInfo(&info);
+            // VPX supplies a native narrow path, unlike UTF-8 script arguments.
+            if (info.path && *info.path) tableDirectory = std::filesystem::path(info.path).parent_path();
+        }
+        bcp::Launch(exe, project, tableDirectory);
         client.Connect(port);
         if (loggingEnabled) Log("Connecting to localhost:" + std::to_string(port));
     }
@@ -102,6 +110,7 @@ MSGPI_EXPORT void MSGPIAPI BCPPluginLoad(uint32_t id, const MsgPluginAPI* api) {
     };
     acquire(SCRIPTPI_NAMESPACE, SCRIPTPI_MSG_GET_API, &script);
     acquire(LOGPI_NAMESPACE, LOGPI_MSG_GET_API, &logging);
+    acquire(VPXPI_NAMESPACE, VPXPI_MSG_GET_API, &vpx);
     if (!script || script->version != 1) { Log("Compatible script API is unavailable", LPI_LVL_ERROR); return; }
     messageDef = MakeClass("BCP_Message", nullptr, {
         {{"AddRef"}, {"uint32"}, 0, {}, AddRef}, {{"Release"}, {"uint32"}, 0, {}, Release},
@@ -141,5 +150,5 @@ MSGPI_EXPORT void MSGPIAPI BCPPluginUnload() {
         std::free(controllerDef); std::free(messageDef); controllerDef = messageDef = nullptr;
     }
     // VPX must release all script objects before unloading the shared library.
-    logging = nullptr; script = nullptr; host = nullptr;
+    logging = nullptr; script = nullptr; vpx = nullptr; host = nullptr;
 }

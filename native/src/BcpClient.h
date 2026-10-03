@@ -32,6 +32,6 @@ private:
     size_t queuedBytes = 0, receivedBytes = 0;
 };
 // Launch a program directly, without shell command interpolation. Never terminates it.
-std::filesystem::path ResolveExecutable(const std::string& executable);
-void Launch(const std::string& executable, const std::string& project = "");
+std::filesystem::path ResolveExecutable(const std::string& executable, const std::filesystem::path& baseDirectory = {});
+void Launch(const std::string& executable, const std::string& project = "", const std::filesystem::path& baseDirectory = {});
 }

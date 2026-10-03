@@ -1,6 +1,8 @@
 #include "plugins/MsgPlugin.h"
 #include "plugins/ScriptablePlugin.h"
 #include "plugins/LoggingPlugin.h"
+#include "plugins/VPXPlugin.h"
+#include <filesystem>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -15,6 +17,8 @@ namespace {
 std::map<std::string, ScriptClassDef*> classes, overrides;
 std::map<unsigned int, std::string> ids;
 ScriptablePluginAPI scripting{};
+VPXPluginAPI vpx{};
+std::string tablePath;
 int subscriptions = 0;
 void Check(bool value) { if (!value) throw std::runtime_error("Binding check failed"); }
 ScriptVariant Call(ScriptClassDef* type, void* me, const char* name, int n = 0, ScriptVariant* args = nullptr) {
@@ -39,7 +43,12 @@ int main(int argc, char** argv) {
         MsgPluginAPI api{}; api.version = 1;
         api.GetMsgID = [](const char* ns, const char* name) { auto id = static_cast<unsigned int>(ids.size()+1); ids[id] = std::string(ns) + name; return id; };
         api.ReleaseMsgID = [](unsigned int id) { ids.erase(id); };
-        api.BroadcastMsg = [](uint32_t, unsigned int id, void* result) { if (ids[id].starts_with(SCRIPTPI_NAMESPACE)) *static_cast<ScriptablePluginAPI**>(result) = &scripting; };
+        tablePath = (std::filesystem::current_path() / "table folder" / "Example.vpx").string();
+        vpx.GetTableInfo = [](VPXTableInfo* info) { info->path = tablePath.c_str(); };
+        api.BroadcastMsg = [](uint32_t, unsigned int id, void* result) {
+            if (ids[id].starts_with(SCRIPTPI_NAMESPACE)) *static_cast<ScriptablePluginAPI**>(result) = &scripting;
+            if (ids[id].starts_with(VPXPI_NAMESPACE)) *static_cast<VPXPluginAPI**>(result) = &vpx;
+        };
         api.SubscribeMsg = [](uint32_t, unsigned int, msgpi_msg_callback, void*) { ++subscriptions; };
         api.UnsubscribeMsg = [](unsigned int, msgpi_msg_callback, void*) { --subscriptions; };
         BCPPluginLoad(7, &api);
@@ -55,6 +64,15 @@ int main(int argc, char** argv) {
         Check(!Call(def, a, "Connected").vBool);
         Check(Call(def, a, "ReadMessage").vObject == nullptr);
         Check(Call(def, b, "ReadMessage").vObject == nullptr);
+        ScriptVariant launchArgs[2]{};
+        launchArgs[0].vInt = 5050;
+        launchArgs[1].vString.string = const_cast<char*>("nonexistent_bcp_export");
+        bool tableRelativeError = false;
+        try { Call(def, a, "ConnectToBuild", 2, launchArgs); }
+        catch (const std::exception& e) {
+            tableRelativeError = std::string(e.what()).find("table folder") != std::string::npos;
+        }
+        Check(tableRelativeError);
         if (argc == 3) {
             auto connect = [&](void* c, int port) { ScriptVariant arg{}; arg.vInt = port; Call(def, c, "ConnectToDebug", 1, &arg); };
             auto send = [&](void* c, const char* text) { ScriptVariant arg{}; arg.vString.string = const_cast<char*>(text); Call(def, c, "Send", 1, &arg); };

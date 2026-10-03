@@ -93,8 +93,12 @@ error (16 MiB / 65,536 messages), not silent loss. Maximum line size is 16 MiB.
 Workers never call VPX or script APIs; asynchronous errors are logged on polling
 when enabled and are available through `LastError`.
 
-Executables are launched without a command shell. Paths are resolved relative to
-the host working directory; pass absolute paths for predictable behavior.
+Executables are launched without a command shell. Relative executable names and
+paths are resolved beside the loaded `.vpx` file, using VPX's table information.
+Absolute executable paths are used as supplied. If no table path is available,
+lookup falls back to the host working directory. The plugin does not change the
+host or child working directory. The separate Godot project argument retains its
+existing behavior; use an absolute project path for predictable development launches.
 You can pass a platform-neutral basename such as `DarkChaos_gmc`:
 
 | Platform | Lookup order for a basename |
