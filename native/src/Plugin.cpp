@@ -5,6 +5,7 @@
 #include "plugins/LoggingPlugin.h"
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <set>
 #include <stdexcept>
@@ -104,6 +105,15 @@ void OnGameEnd(unsigned int, void*, void*) { for (auto c : controllers) c->clien
 }
 
 MSGPI_EXPORT void MSGPIAPI BCPPluginLoad(uint32_t id, const MsgPluginAPI* api) {
+    // Older VPX builds supplied an unversioned dispatch table. Its function
+    // pointers occupy different offsets, so even GetMsgID is unsafe to call.
+    int apiVersion = 0;
+    if (api) std::memcpy(&apiVersion, api, sizeof(apiVersion));
+    if (apiVersion != 1) {
+        // The host logging API cannot be acquired through an incompatible table.
+        std::fputs("BCP: incompatible VPX plugin API; this plugin requires MsgPluginAPI version 1. Use a compatible VPX build.\n", stderr);
+        return;
+    }
     host = api; endpoint = id;
     auto acquire = [&](const char* ns, const char* name, void* target) {
         auto msg = host->GetMsgID(ns, name); host->BroadcastMsg(endpoint, msg, target); host->ReleaseMsgID(msg);

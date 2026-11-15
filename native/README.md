@@ -10,6 +10,19 @@ required. The C# project remains available separately.
 SDK baseline: `vpinball/vpinball` revision
 `eb9ae26c30e2475e865e41ba89bc6f271b173bef`. These plugin APIs are still evolving.
 
+The host must provide `MsgPluginAPI` version 1 and the compatible script API.
+VPX introduced the versioned dispatch table in commit
+`595d1fd5e3b886645d6e5c8e0a1624dc9733b516` (September 5, 2026). Older,
+unversioned hosts are incompatible. The displayed version `10.8.1` alone does
+not identify a compatible build; compare the full VPX build/commit with a known
+working installation or use a build matching the SDK baseline above.
+
+The plugin now checks the message API before calling host functions and writes
+an incompatibility diagnostic to stderr when it refuses initialization. This
+does not make an older host compatible, and its plugin UI may still show BCP
+as enabled. Earlier BCP binaries could crash in `MsgPluginManager::SubscribeMsg`
+from `BCPPluginLoad` on such a host because the function-pointer offsets differ.
+
 The plugin exposes `ReadMessage()` to return one message at a time. No VPX source
 patch is required. The supplied GLF table expects an array, so add the helper from
 `examples/stock-vpx-adapter.vbs` and change the `GetMessages` assignment in both

@@ -33,6 +33,17 @@ ScriptVariant Call(ScriptClassDef* type, void* me, const char* name, int n = 0, 
 }
 int main(int argc, char** argv) {
     try {
+        // Rejected hosts must not call any dispatch-table entry, and unloading
+        // after rejection must be safe. Null entries make accidental calls fail.
+        BCPPluginLoad(7, nullptr);
+        BCPPluginUnload();
+        for (int version : {0, 2}) {
+            MsgPluginAPI incompatible{};
+            incompatible.version = version;
+            BCPPluginLoad(7, &incompatible);
+            BCPPluginUnload();
+            Check(classes.empty() && overrides.empty() && ids.empty() && subscriptions == 0);
+        }
         scripting.version = 1;
         scripting.RegisterScriptClass = [](ScriptClassDef* d) { classes[d->name.name] = d; };
         scripting.UnregisterScriptClass = [](ScriptClassDef* d) { classes.erase(d->name.name); };
