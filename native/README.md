@@ -81,12 +81,17 @@ x64/AArch64 and macOS universal packages; it does not publish releases.
 | `EnableLogging()` | Enable host logging for this object |
 | `Connected` | Current connection status |
 | `LastError` | Last asynchronous transport failure, empty after a new connection |
+| `RegisterDisplay(name, width, height, id, isDmd)` | Publish a named GMC frame stream as a VPX display; `id` is unique across BCP connections |
+| `ClearDisplays()` | Withdraw this connection's display sources |
 
 Messages expose `Command`, `GetValue(key)` and `RawMessage`.
 `GetValue("RawMessage")` also returns the unmodified line without CR/LF.
 Keys and command names are case-insensitive; values retain case and type prefixes
 such as `bool:true`, `int:1` and `NoneType:`. Missing keys return an empty string.
 Outgoing JSON is passed through, and incoming `json=` payloads are kept intact.
+Binary BCP bodies use the header's `bytes=N` length, so pixel values containing
+newlines or NULs do not corrupt the following messages. Binary bodies are not
+exposed by the scripting message object; `rgb_dmd_frame` is handled internally.
 `GetArrayValue` is not implemented: it is not called by the supplied GLF table,
 and Newtonsoft token arrays do not have a defined portable scripting contract.
 
@@ -105,6 +110,85 @@ only when it cannot corrupt a partially sent line. Queue overflow is an explicit
 error (16 MiB / 65,536 messages), not silent loss. Maximum line size is 16 MiB.
 Workers never call VPX or script APIs; asynchronous errors are logged on polling
 when enabled and are available through `LastError`.
+
+## Display Godot/GMC inside VPX 10.8.1
+
+Use GMC's built-in `MPFDMDDisplay` for frame output; an extra sender script is
+not required. For the complete Godot project and VPX table migration steps,
+including GLF wrapper setup and the optional alternative sender, see
+[Godot display migration](docs/godot-display-migration.md).
+
+The same BCP connection can supply VPX's native display API. No window title,
+window capture, additional port, or separate receiver plugin is required.
+The native plugin receives GMC's existing binary `rgb_dmd_frame` messages and
+advertises registered outputs through `ControllerPlugin.h`.
+
+1. Enable this BCP plugin in VPX. Rebuild it against the SDK matching your VPX
+   build, as described above.
+2. On the **existing media controller object**, register the output once during
+   table initialization. The name is the GMC display node's name (case-sensitive),
+   and the width/height must equal the resolution of the frames GMC sends:
+
+   ```vbscript
+   ' Example only: replace name and dimensions with your GMC display settings.
+   m_bcpController.RegisterDisplay "DefaultDisplay", 256, 64, 0, True
+   ```
+
+   This can run before or after `Connect`. In a GLF table, add the call inside
+   `GlfVpxBcpController.init`, where `m_bcpController` is the native object, or
+   use the forwarding methods in `examples/GlfVpxBcpController.vbs`. Reuse the
+   media connection on 5050; the GLF monitor on 5051 is a separate connection.
+3. In the flasher properties, choose **DMD** for `isDmd=True`, or **Display**
+   for `isDmd=False` (LCD-style artwork). Set **Source** to:
+
+   ```text
+   ctrl://BCP/display?id=0
+   ```
+
+   The final number is the registered id. DMD mode adds VPX's dot appearance;
+   Display mode suits artwork whose appearance is already rendered by Godot.
+   Remove any script assignments that force the flasher into the other mode or
+   write its legacy `DMDPixels`/`DMDColoredPixels` directly.
+4. Enable binary output in Godot. A plain `MPFDisplay` does not send frames.
+   The bundled GMC `MPFDMDDisplay` already does: use it on the display node and
+   set its `resolution` to the registered dimensions and `pixel_order` to RGB.
+   Its `rgb_dmd_frame` header contains only `name` and `bytes`, which is why
+   resolution must be registered in VPX. It captures its containing viewport;
+   give a display its own viewport/window when showing multiple displays.
+   Do not add the optional sender alongside `MPFDMDDisplay` for the same output.
+
+The receiver accepts tightly packed **RGB8** (3 bytes/pixel) and **RGBA8**
+(4 bytes/pixel, alpha discarded), publishing sRGB RGB24 to VPX. If your GMC
+version returns another image format, convert the image to `Image.FORMAT_RGB8`
+before `get_data()`; HDR linear images also need conversion to sRGB. Output
+pixels before a Godot dot shader when using VPX's DMD effect. Native resolution
+and a modest update rate keep GPU readback and shared-connection traffic low.
+
+Wire format (the pixel body is binary, not base64, and has no trailing newline):
+
+```text
+rgb_dmd_frame?name=DefaultDisplay&bytes=49152\n
+<49152 RGB bytes for a 256 x 64 frame><next BCP header>\n
+```
+
+New custom senders must serialize all writes to a BCP socket: a header and its
+binary body must remain together, including when other threads send events.
+GMC variants should be checked for this if frames corrupt during simultaneous
+events. Do not insert JSON or event lines into an in-flight pixel body.
+
+Display frames bypass `ReadMessage` and the normal event queue. The receiver
+keeps the latest complete frame for each registered name; outputs not registered
+on that connection are consumed and discarded. A dimension/byte-count mismatch
+sets `LastError` and stops that connection rather than publishing invalid pixels.
+Malformed or oversized binary lengths likewise close the connection.
+
+`Disconnect` and connection loss turn registered displays black, retaining their
+configuration for a subsequent `Connect`. `ClearDisplays`, table end, and object
+destruction withdraw the sources. Register outputs again for the next table.
+Ids are nonnegative and unique across all BCP objects; duplicate ids/names are
+rejected. Each connection supports up to 16 outputs. Dimensions are 1..4096,
+with `width * height * 4` limited to 16 MiB. Source discovery and removal run on
+the VPX API thread; immutable snapshots protect readers from partial frames.
 
 Executables are launched without a command shell. Relative executable names and
 paths are resolved beside the loaded `.vpx` file, using VPX's table information.
@@ -151,7 +235,10 @@ controller, continue supplying its explicit Windows executable filename.
 
 CTest covers protocol parsing, native bindings and lifecycle, and two loopback
 peers exercising independent connections, early-send ordering, fragmented UTF-8,
-large JSON frames, literal typed parameters and bounded shutdown.
+large JSON frames, literal typed parameters and bounded shutdown. Display tests
+cover every split point of a binary frame, RGB/RGBA conversion, invalid lengths,
+immutable concurrent snapshots, display discovery, duplicate ids, frame/event
+interleaving, disconnect blanking and source removal lifetime.
 Binding tests verify scalar message polling and that no native GetMessages or
 array type is exposed. Native tests do not replace an end-to-end VPX + Godot/GLF
 session, which is still required before a

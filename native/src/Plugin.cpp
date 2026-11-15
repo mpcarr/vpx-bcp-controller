@@ -3,6 +3,7 @@
 #include "plugins/ScriptablePlugin.h"
 #include "plugins/VPXPlugin.h"
 #include "plugins/LoggingPlugin.h"
+#include "plugins/ControllerPlugin.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
@@ -16,9 +17,28 @@ ScriptablePluginAPI* script = nullptr;
 LoggingPluginAPI* logging = nullptr;
 VPXPluginAPI* vpx = nullptr;
 uint32_t endpoint = 0;
-unsigned int endMessage = 0;
+unsigned int endMessage = 0, getDisplaysMessage = 0, displaysChangedMessage = 0;
 struct Controller;
 std::set<Controller*> controllers;
+struct DisplaySource {
+    std::shared_ptr<bcp::Display> display;
+    uint32_t resourceId;
+    bool isDmd;
+    std::mutex readersMutex;
+    std::map<std::thread::id, std::shared_ptr<const bcp::PixelFrame>> readers;
+};
+DisplayFrame MSGPIAPI GetDisplayFrame(void* context) {
+    // Each caller retains its immutable snapshot until its next frame request.
+    // The socket worker can replace the latest frame without altering pixels
+    // that a renderer on another thread is currently reading. The provider owns
+    // these references so they are all released before the DLL is unloaded.
+    auto source = static_cast<DisplaySource*>(context);
+    std::lock_guard lock(source->readersMutex);
+    auto& retained = source->readers[std::this_thread::get_id()];
+    retained = source->display->Snapshot();
+    return {retained->id, retained->pixels.data()};
+}
+bool DisplayIdInUse(uint32_t resourceId);
 void Log(const std::string& text, unsigned int level = LPI_LVL_INFO) {
     if (logging) logging->Log("BCP", "Controller", 0, level, text.c_str());
 }
@@ -33,8 +53,28 @@ struct Controller : RefCounted {
     bcp::Client client;
     bool loggingEnabled = false;
     std::string reportedError;
+    std::vector<std::unique_ptr<DisplaySource>> displays;
     Controller() { controllers.insert(this); }
-    ~Controller() override { client.Disconnect(); controllers.erase(this); }
+    ~Controller() override { client.Disconnect(); ClearDisplays(); controllers.erase(this); }
+    void RegisterDisplay(const std::string& name, int width, int height, int resourceId, bool isDmd) {
+        if (width < 1 || height < 1 || resourceId < 0) throw std::invalid_argument("Display dimensions must be positive and display id nonnegative");
+        if (DisplayIdInUse(static_cast<uint32_t>(resourceId))) throw std::invalid_argument("BCP display id is already in use");
+        // Reserve all provider storage before changing the client's registry.
+        auto source = std::make_unique<DisplaySource>();
+        displays.reserve(displays.size() + 1);
+        source->resourceId = static_cast<uint32_t>(resourceId);
+        source->isDmd = isDmd;
+        source->display = client.RegisterDisplay(name, static_cast<unsigned int>(width), static_cast<unsigned int>(height));
+        displays.push_back(std::move(source));
+        host->BroadcastMsg(endpoint, displaysChangedMessage, nullptr);
+    }
+    void ClearDisplays() {
+        // Consumers must finish processing removal before callContext is freed.
+        auto removed = std::move(displays);
+        displays.clear();
+        client.ClearDisplays();
+        if (!removed.empty()) host->BroadcastMsg(endpoint, displaysChangedMessage, nullptr);
+    }
     void PollError() {
         auto error = client.LastError();
         if (loggingEnabled && !error.empty() && error != reportedError) { Log(error, LPI_LVL_ERROR); reportedError = error; }
@@ -54,6 +94,32 @@ struct Controller : RefCounted {
         if (loggingEnabled) Log("Connecting to localhost:" + std::to_string(port));
     }
 };
+bool DisplayIdInUse(uint32_t resourceId) {
+    for (auto controller : controllers)
+        for (const auto& source : controller->displays)
+            if (source->resourceId == resourceId) return true;
+    return false;
+}
+void OnGetDisplays(unsigned int, void*, void* data) {
+    auto request = static_cast<GetDisplaySrcMsg*>(data);
+    for (auto controller : controllers) {
+        for (const auto& source : controller->displays) {
+            if (request->count < request->maxEntryCount) {
+                DisplaySrcId display{};
+                display.id.endpointId = endpoint;
+                display.id.resId = source->resourceId;
+                display.width = source->display->width;
+                display.height = source->display->height;
+                display.hardware = source->isDmd ? CTLPI_DISPLAY_HARDWARE_RGB_LED : CTLPI_DISPLAY_HARDWARE_LCD_DISPLAY;
+                display.callContext = source.get();
+                display.frameFormat = CTLPI_DISPLAY_FORMAT_SRGB888;
+                display.GetRenderFrame = GetDisplayFrame;
+                request->entries[request->count] = display;
+            }
+            ++request->count;
+        }
+    }
+}
 void StringResult(ScriptVariant* ret, const std::string& value) {
     auto p = new char[value.size() + 1]; std::memcpy(p, value.c_str(), value.size() + 1);
     ret->vString = { [](ScriptString* s) { delete[] s->string; }, p };
@@ -80,6 +146,10 @@ void ControllerCall(void* me, int index, ScriptVariant* args, ScriptVariant* ret
             c->PollError(); bcp::Message value;
             ret->vObject = c->client.Pop(value) ? new ScriptMessage(std::move(value)) : nullptr; break;
         }
+        case 12:
+            c->RegisterDisplay(args[0].vString.string, args[1].vInt, args[2].vInt, args[3].vInt, args[4].vBool);
+            break;
+        case 13: c->ClearDisplays(); break;
         }
     } catch (const std::exception& e) {
         if (c->loggingEnabled) Log(e.what(), LPI_LVL_ERROR);
@@ -101,7 +171,7 @@ ScriptClassDef* MakeClass(const char* name, void* (*factory)(), std::initializer
     std::copy(members.begin(), members.end(), def->members); return def;
 }
 ScriptClassDef *controllerDef = nullptr, *messageDef = nullptr;
-void OnGameEnd(unsigned int, void*, void*) { for (auto c : controllers) c->client.Disconnect(); }
+void OnGameEnd(unsigned int, void*, void*) { for (auto c : controllers) { c->client.Disconnect(); c->ClearDisplays(); } }
 }
 
 MSGPI_EXPORT void MSGPIAPI BCPPluginLoad(uint32_t id, const MsgPluginAPI* api) {
@@ -139,7 +209,9 @@ MSGPI_EXPORT void MSGPIAPI BCPPluginLoad(uint32_t id, const MsgPluginAPI* api) {
         {{"EnableLogging"}, {"void"}, 0, {}, ControllerCall},
         {{"Connected"}, {"bool"}, 0, {}, ControllerCall},
         {{"LastError"}, {"string"}, 0, {}, ControllerCall},
-        {{"ReadMessage"}, {"BCP_Message"}, 0, {}, ControllerCall}
+        {{"ReadMessage"}, {"BCP_Message"}, 0, {}, ControllerCall},
+        {{"RegisterDisplay"}, {"void"}, 5, {{"string"}, {"int"}, {"int"}, {"int"}, {"bool"}}, ControllerCall},
+        {{"ClearDisplays"}, {"void"}, 0, {}, ControllerCall}
     });
     script->RegisterScriptClass(messageDef);
     script->RegisterScriptClass(controllerDef);
@@ -148,10 +220,16 @@ MSGPI_EXPORT void MSGPIAPI BCPPluginLoad(uint32_t id, const MsgPluginAPI* api) {
     script->SetCOMObjectOverride("BCP.Controller", controllerDef);
     endMessage = host->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_END);
     host->SubscribeMsg(endpoint, endMessage, OnGameEnd, nullptr);
+    getDisplaysMessage = host->GetMsgID(CTLPI_NAMESPACE, CTLPI_DISPLAY_GET_SRC_MSG);
+    displaysChangedMessage = host->GetMsgID(CTLPI_NAMESPACE, CTLPI_DISPLAY_ON_SRC_CHG_MSG);
+    host->SubscribeMsg(endpoint, getDisplaysMessage, OnGetDisplays, nullptr);
 }
 MSGPI_EXPORT void MSGPIAPI BCPPluginUnload() {
     OnGameEnd(0, nullptr, nullptr);
     if (controllerDef) {
+        host->UnsubscribeMsg(getDisplaysMessage, OnGetDisplays, nullptr);
+        host->ReleaseMsgID(getDisplaysMessage);
+        host->ReleaseMsgID(displaysChangedMessage);
         host->UnsubscribeMsg(endMessage, OnGameEnd, nullptr); host->ReleaseMsgID(endMessage);
         script->SetCOMObjectOverride("vpx_bcp_controller.VpxBcpController", nullptr);
         script->SetCOMObjectOverride("BCP.Controller", nullptr);

@@ -22,7 +22,12 @@ def server(listener, monitor):
                 assert stream.readline() == b'trigger?name=second\n'
                 conn.sendall(b'hello\ntrigger?name=caf\xc3')
                 time.sleep(.02)
-                conn.sendall(b'\xa9\ntrigger?json={"text":"' + b'x' * 120000 + b'"}\n')
+                conn.sendall(b'\xa9\nrgb_dmd_frame?name=Unregistered&bytes=3\n\n\x00\xff')
+                conn.sendall(b'rgb_dmd_frame?name=Main&bytes=6\n\x01\x02')
+                time.sleep(.02)
+                conn.sendall(b'\x03\x04\x05\x06rgb_dmd_frame?name=Main&bytes=8\n\x0a\x0d\x00')
+                time.sleep(.02)
+                conn.sendall(b'\xff\xff\x80\x01\xfftrigger?json={"text":"' + b'x' * 120000 + b'"}\n')
             assert stream.readline() == b'goodbye\n'
 
 listeners = []
@@ -37,4 +42,4 @@ with concurrent.futures.ThreadPoolExecutor(2) as pool:
     subprocess.run([sys.argv[1], *ports], check=True, timeout=15)
     for job in jobs:
         job.result()
-print('Two connections, ordering, fragmented UTF-8, large frames, shutdown: OK')
+print('Two connections, events, fragmented UTF-8 and binary RGB/RGBA, large JSON, shutdown: OK')

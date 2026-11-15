@@ -1,4 +1,5 @@
 #include "BcpClient.h"
+#include "StreamDecoder.h"
 #include <chrono>
 #include <stdexcept>
 #ifdef _WIN32
@@ -52,13 +53,14 @@ void Client::Connect(int port) {
     { std::lock_guard lock(mutex); error.clear(); }
     stop = false;
     try {
-        worker = std::thread([this, port] { try { Run(port); } catch (const std::exception& e) { Error(e.what()); } connected = false; stop = true; });
+        worker = std::thread([this, port] { try { Run(port); } catch (const std::exception& e) { Error(e.what()); } connected = false; stop = true; ResetDisplays(); });
     } catch (...) { stop = true; throw; }
 }
 void Client::Disconnect() {
     stop = true; wake.notify_all();
     if (worker.joinable()) worker.join();
     connected = false;
+    ResetDisplays();
     std::lock_guard lock(mutex);
     outgoing.clear(); incoming.clear(); queuedBytes = receivedBytes = 0;
 }
@@ -82,8 +84,41 @@ std::vector<Message> Client::Drain() {
 bool Client::Pop(Message& message) {
     std::lock_guard lock(mutex);
     if (incoming.empty()) return false;
-    receivedBytes -= incoming.front().raw.size();
+    receivedBytes -= incoming.front().raw.size() + incoming.front().binary.size();
     message = std::move(incoming.front()); incoming.pop_front(); return true;
+}
+std::shared_ptr<Display> Client::RegisterDisplay(const std::string& name, unsigned int width, unsigned int height) {
+    if (name.empty() || name.size() > 256) throw std::invalid_argument("Display name must contain 1..256 bytes");
+    auto display = std::make_shared<Display>(width, height);
+    std::lock_guard lock(mutex);
+    if (displays.contains(name)) throw std::invalid_argument("Display name is already registered on this connection");
+    if (displays.size() >= 16) throw std::invalid_argument("At most 16 displays are supported per connection");
+    displays.emplace(name, display);
+    return display;
+}
+void Client::ClearDisplays() { std::lock_guard lock(mutex); displays.clear(); }
+void Client::ResetDisplays() {
+    std::lock_guard lock(mutex);
+    for (auto& [name, display] : displays) display->Reset();
+}
+void Client::Receive(Message message) {
+    if (message.command == "rgb_dmd_frame") {
+        std::shared_ptr<Display> display;
+        {
+            std::lock_guard lock(mutex);
+            auto item = displays.find(message.GetValue("name"));
+            if (item != displays.end()) display = item->second;
+        }
+        // Display frames never enter the script's event queue. Keep only the
+        // latest complete frame, and discard outputs the table did not register.
+        if (display) display->Update(message.binary);
+        return;
+    }
+    const size_t size = message.raw.size() + message.binary.size();
+    std::lock_guard lock(mutex);
+    if (incoming.size() >= 65536 || size > Limit - receivedBytes) throw std::runtime_error("BCP incoming queue is full");
+    receivedBytes += size;
+    incoming.push_back(std::move(message));
 }
 void Client::Run(int port) {
     Network network;
@@ -127,7 +162,8 @@ void Client::Run(int port) {
     }
     if (!connected) { if (!stop) Error("Cannot connect to localhost:" + std::to_string(port)); return; }
     // Preserve legacy handshake value; all protocol lines now include their terminator.
-    std::string pending = "hello?version=21&controller_name=VPX&controller_version=0.1.0\n", buffer;
+    std::string pending = "hello?version=21&controller_name=VPX&controller_version=0.1.0\n";
+    StreamDecoder decoder;
     size_t offset = 0;
     while (!stop) {
         if (pending.empty()) {
@@ -151,16 +187,7 @@ void Client::Run(int port) {
             int n = static_cast<int>(recv(socket.value, bytes, sizeof(bytes), 0));
             if (n == 0) throw std::runtime_error("BCP peer disconnected");
             if (n < 0) { if (!Pending()) throw std::runtime_error("BCP receive failed"); if (!pending.empty()) Wait(socket.value, true); continue; }
-            buffer.append(bytes, n);
-            size_t end;
-            while ((end = buffer.find('\n')) != std::string::npos) {
-                if (end > Limit) throw std::runtime_error("BCP line exceeds 16 MiB");
-                auto message = Message::Parse(buffer.substr(0, end)); buffer.erase(0, end + 1);
-                std::lock_guard lock(mutex);
-                if (incoming.size() >= 65536 || receivedBytes + message.raw.size() > Limit) throw std::runtime_error("BCP incoming queue is full");
-                receivedBytes += message.raw.size(); incoming.push_back(std::move(message));
-            }
-            if (buffer.size() > Limit) throw std::runtime_error("BCP line exceeds 16 MiB");
+            decoder.Feed(std::string_view(bytes, n), [this](Message&& message) { Receive(std::move(message)); });
         }
     }
     // Do not append a goodbye to a partially transmitted application line.
