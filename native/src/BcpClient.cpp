@@ -1,6 +1,7 @@
 #include "BcpClient.h"
 #include "StreamDecoder.h"
 #include <chrono>
+#include <array>
 #include <stdexcept>
 #ifdef _WIN32
 #include <winsock2.h>
@@ -101,6 +102,21 @@ void Client::ResetDisplays() {
     std::lock_guard lock(mutex);
     for (auto& [name, display] : displays) display->Reset();
 }
+std::optional<StreamDecoder::BinaryTarget> Client::PrepareBinary(const Message& message, size_t byteCount) {
+    if (message.command != "rgb_dmd_frame") return std::nullopt;
+    std::shared_ptr<Display> display;
+    {
+        std::lock_guard lock(mutex);
+        const auto item = displays.find(message.GetValue("name"));
+        if (item != displays.end()) display = item->second;
+    }
+    if (!display) return StreamDecoder::BinaryTarget{}; // Consume without storing.
+    auto pending = display->PrepareFrame(byteCount);
+    const auto bytes = pending.bytes;
+    return StreamDecoder::BinaryTarget{bytes, [display, pending = std::move(pending)]() mutable {
+        display->PublishFrame(std::move(pending));
+    }};
+}
 void Client::Receive(Message message) {
     if (message.command == "rgb_dmd_frame") {
         std::shared_ptr<Display> display;
@@ -164,6 +180,9 @@ void Client::Run(int port) {
     // Preserve legacy handshake value; all protocol lines now include their terminator.
     std::string pending = "hello?version=21&controller_name=VPX&controller_version=0.1.0\n";
     StreamDecoder decoder;
+    const StreamDecoder::Receiver receive = [this](Message&& message) { Receive(std::move(message)); };
+    const StreamDecoder::PrepareBinary prepare = [this](const Message& message, size_t size) { return PrepareBinary(message, size); };
+    std::array<char, 64 * 1024> bytes;
     size_t offset = 0;
     while (!stop) {
         if (pending.empty()) {
@@ -183,11 +202,19 @@ void Client::Run(int port) {
             readable = queued || Wait(socket.value, false);
         }
         if (readable) {
-            char bytes[8192];
-            int n = static_cast<int>(recv(socket.value, bytes, sizeof(bytes), 0));
-            if (n == 0) throw std::runtime_error("BCP peer disconnected");
-            if (n < 0) { if (!Pending()) throw std::runtime_error("BCP receive failed"); if (!pending.empty()) Wait(socket.value, true); continue; }
-            decoder.Feed(std::string_view(bytes, n), [this](Message&& message) { Receive(std::move(message)); });
+            // Drain available data without a select call for every small chunk.
+            // Bound each batch so outgoing commands and shutdown stay responsive.
+            for (size_t received = 0; received < 1024 * 1024 && !stop;) {
+                int n = static_cast<int>(recv(socket.value, bytes.data(), static_cast<int>(bytes.size()), 0));
+                if (n == 0) throw std::runtime_error("BCP peer disconnected");
+                if (n < 0) {
+                    if (!Pending()) throw std::runtime_error("BCP receive failed");
+                    if (!pending.empty()) Wait(socket.value, true);
+                    break;
+                }
+                received += n;
+                decoder.Feed(std::string_view(bytes.data(), n), receive, prepare);
+            }
         }
     }
     // Do not append a goodbye to a partially transmitted application line.

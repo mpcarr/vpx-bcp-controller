@@ -243,3 +243,58 @@ Binding tests verify scalar message polling and that no native GetMessages or
 array type is exposed. Native tests do not replace an end-to-end VPX + Godot/GLF
 session, which is still required before a
 release. Cross-platform builds require the corresponding CI jobs or local hosts.
+
+### Display performance in 0.2.1
+
+This update requires no Godot project or table-script changes. With VPX closed,
+replace `plugins/bcp/plugin-bcp64.dll` and `plugin.cfg` with the matching new
+Windows files, then restart VPX. Existing display names, resolutions and source
+URIs remain valid.
+
+Binary display bodies are assembled directly into owned frame storage. RGB
+frames need no additional publication copy; RGBA frames are compacted in place.
+Storage returns to a per-display pool only after its final reader releases it.
+The pool caches at most three returned buffers; outstanding reader snapshots
+remain immutable and can outlive the display object. RGB and RGBA reuse the same
+RGBA-capacity storage, trading some retained memory for fewer large allocations.
+Reset invalidates any in-flight write. A display is selected when its frame
+header arrives, so clearing/re-registering a name cannot redirect a partly
+received frame into the new registration.
+
+Unregistered display bodies are consumed without allocating a full image.
+Other binary BCP messages retain their original payload behaviour. The socket
+worker reads up to 64 KiB at a time and limits a receive batch to 1 MiB before
+servicing outgoing traffic again. This release does not add frame-rate limiting,
+frame coalescing, or identical-frame detection.
+
+The test suite additionally covers pooled-buffer reuse with retained readers,
+direct-body framing at every split, partial-frame abandonment, and a real
+loopback connection mixing 720p RGB/RGBA frames with commands, registration
+replacement, connection loss and reconnect.
+
+An optional benchmark measures decoder + conversion + publication work:
+
+```sh
+cmake -S native -B native/build -DBCP_BUILD_BENCHMARKS=ON -DVPX_SOURCE_DIR=/path/to/vpinball
+cmake --build native/build --config Release --target frame-benchmark
+# Windows / Visual Studio: width height bytes-per-pixel chunk-bytes frame-count
+native/build/Release/frame-benchmark.exe 1280 720 4 65536 300
+# Single-configuration generators place the executable in native/build instead.
+```
+
+Local Windows x64 / MSVC 19.50 Release measurements on 2026-11-17, comparing
+0.2.0 source with this update: median of three runs, 30 warm-up frames and 300
+measured frames per run, 64 KiB input chunks for both versions, one retained
+consumer snapshot, with resulting pixels checked for correctness:
+
+| Input | Before (ms/frame) | After (ms/frame) |
+| --- | ---: | ---: |
+| 1280 x 720 RGB | 2.727 | 0.184 |
+| 1280 x 720 RGBA | 3.025 | 1.258 |
+| 1920 x 1080 RGB | 6.259 | 0.718 |
+| 1920 x 1080 RGBA | 7.298 | 3.128 |
+
+These measurements exclude sockets, Godot rendering/readback and VPX texture
+uploads/rendering. They are not in-game FPS predictions. RGB **channel order**
+in GMC does not establish whether its image data is RGB8 or RGBA8; the plugin
+still accepts either format.

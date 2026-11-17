@@ -1,6 +1,7 @@
 #pragma once
 #include "Message.h"
 #include "Display.h"
+#include "StreamDecoder.h"
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -26,6 +27,7 @@ private:
     void Run(int port);
     void Error(std::string message);
     void Receive(Message message);
+    std::optional<StreamDecoder::BinaryTarget> PrepareBinary(const Message& message, size_t byteCount);
     void ResetDisplays();
     std::atomic<bool> stop{true}, connected{false};
     std::thread worker;
